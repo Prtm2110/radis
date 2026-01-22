@@ -16,6 +16,7 @@ import time
 import urllib.request
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from multiprocessing import Pool
 from os.path import basename, commonpath, join
 from typing import Union
 
@@ -631,6 +632,34 @@ def _download_single_chunk(
     )
 
 
+def _process_single_chunk_worker(args):
+    """Worker function for processing one chunk in parallel (module-level for pickling)"""
+    i, file, engine_val, columns_val, output_val, wav_pair = args
+
+    file_name = _fcache_file_name(file, engine_val)
+    cached_df = _load_cache_file(file_name, engine=engine_val, columns=columns_val)
+
+    if cached_df is not None:
+        source = "cache"
+    else:
+        df = parse_one_CO2_block(
+            file,
+            columns=columns_val,
+            engine=engine_val,
+            output=output_val,
+            wav_range=wav_pair,
+            verbose=False,
+        )
+        cached_df = df
+        source = "parsed"
+
+    # Clean up .par file
+    if os.path.exists(file):
+        os.remove(file)
+
+    return cached_df, source
+
+
 def read_and_write_chunked_for_CO2(
     load_wavenum_max,
     load_wavenum_min,
@@ -640,6 +669,7 @@ def read_and_write_chunked_for_CO2(
     output="pandas",
     verbose=True,
     local_databases=None,
+    parallel=True,
 ):
     """
     Download, parse and cache CO2 data chunks for specified wavenumber range.
@@ -659,6 +689,8 @@ def read_and_write_chunked_for_CO2(
         Print progress messages (default True)
     local_databases : str, optional
         Custom cache directory
+    parallel : bool
+        Use multiprocessing for parallel chunk parsing (default True)
 
     Returns
     -------
@@ -756,33 +788,54 @@ def read_and_write_chunked_for_CO2(
                 f"\nAll files already downloaded. Loading from `.h5` or `.hdf5` files."
             )
 
-    with tqdm(
-        total=len(local_paths), desc="Processing chunks", disable=not verbose
-    ) as pbar:
-        for i, file in enumerate(local_paths):
-            file_name = _fcache_file_name(file, engine)
-            cached_df = _load_cache_file(file_name, engine=engine, columns=columns)
+    # Process chunks (parallel or sequential)
+    cpu_count = min(
+        os.cpu_count() or 1, len(local_paths), 4
+    )  # Limit to 4 to manage memory
+    use_parallel = parallel and cpu_count > 1 and len(local_paths) > 1
 
-            if cached_df is not None:
-                _append_dataframe(cached_df)
-                pbar.set_postfix_str("from cache")
-            else:
-                pbar.set_postfix_str("parsing")
-                df = parse_one_CO2_block(
-                    file,
-                    columns=columns,
-                    engine=engine,
-                    output=output,
-                    wav_range=wav_pairs[i],
-                    verbose=False,
+    if verbose:
+        print(f"\n\x1b[4mProcessing chunks:\x1b[0m")
+        print(f"- Using {cpu_count if use_parallel else 1} parallel worker(s)")
+        parsing_start_time = time.time()
+
+    # Prepare arguments for processing
+    args_list = [
+        (i, file, engine, columns, output, wav_pairs[i])
+        for i, file in enumerate(local_paths)
+    ]
+
+    if use_parallel:
+        # Parallel processing with ordered results
+        with Pool(processes=cpu_count) as pool:
+            results = list(
+                tqdm(
+                    pool.imap(_process_single_chunk_worker, args_list),
+                    total=len(local_paths),
+                    desc="Processing chunks",
+                    disable=not verbose,
                 )
-                _append_dataframe(df)
+            )
+    else:
+        # Sequential processing
+        results = []
+        with tqdm(
+            total=len(local_paths), desc="Processing chunks", disable=not verbose
+        ) as pbar:
+            for args in args_list:
+                result = _process_single_chunk_worker(args)
+                results.append(result)
+                pbar.set_postfix_str(result[1])  # "cache" or "parsed"
+                pbar.update(1)
 
-            # Always remove .par file after processing
-            if os.path.exists(file):
-                os.remove(file)
+    # Append results in order
+    for df, source in results:
+        _append_dataframe(df)
 
-            pbar.update(1)
+    if verbose:
+        parsing_end_time = time.time()
+        parsing_duration = parsing_end_time - parsing_start_time
+        print(f"Parsing completed in {parsing_duration:.2f}s")
 
     # Combine DataFrames
     if dataframes:
@@ -822,6 +875,7 @@ def download_and_decompress_CO2_into_df(
     verbose=True,
     engine="pytables",
     output="pandas",
+    parallel=True,
 ):
     """
     This function handles downloading the HITEMP CO2 database. The full 2024 database is downloaded in smaller files of approximately 50-70 MB (500 MB decompressed chunks in h5 format), locating the appropriate data chunk based on the provided wavenumber range and reading the relevant data into a DataFrame.
@@ -844,6 +898,8 @@ def download_and_decompress_CO2_into_df(
         Output format for the data. Default is "pandas" DataFrame.
     local_databases : str or None, optional
         Directory to store/read local database files. If None, uses the default directory.
+    parallel : bool, default True
+        Use multiprocessing for parallel chunk parsing. Default is True.
     Returns
     -------
     DataFrame or object
@@ -874,6 +930,7 @@ def download_and_decompress_CO2_into_df(
         output=output,
         verbose=verbose,
         local_databases=local_databases,
+        parallel=parallel,
     )
     combined_df = combined_df[
         (combined_df["wav"] >= load_wavenum_min)
