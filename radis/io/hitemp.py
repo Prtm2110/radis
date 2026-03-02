@@ -78,7 +78,7 @@ def fetch_hitemp(
             and are extremely useful to deal with the largest databases.
 
     parallel: bool
-        if ``True``, uses joblib.parallel to load database with multiple processes
+        if ``True``, uses ``multiprocessing.Pool`` to parse CO2 chunks in parallel
     database: ``str``
         The database version to retrieve. Options include:
         - `"most_recent"`: Fetches the latest available database version.

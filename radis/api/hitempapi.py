@@ -633,8 +633,8 @@ def _download_single_chunk(
 
 
 def _process_single_chunk_worker(args):
-    """Worker function for processing one chunk in parallel (module-level for pickling)"""
-    i, file, engine_val, columns_val, output_val, wav_pair = args
+    """Worker function for processing one chunk in parallel (module-level for pickling)."""
+    _, file, engine_val, columns_val, output_val, wav_pair = args
 
     file_name = _fcache_file_name(file, engine_val)
     cached_df = _load_cache_file(file_name, engine=engine_val, columns=columns_val)
@@ -689,8 +689,8 @@ def read_and_write_chunked_for_CO2(
         Print progress messages (default True)
     local_databases : str, optional
         Custom cache directory
-    parallel : bool
-        Use multiprocessing for parallel chunk parsing (default True)
+    parallel : bool, optional
+        Use multiprocessing for parallel chunk parsing. Default is ``True``.
 
     Returns
     -------
@@ -788,54 +788,39 @@ def read_and_write_chunked_for_CO2(
                 f"\nAll files already downloaded. Loading from `.h5` or `.hdf5` files."
             )
 
-    # Process chunks (parallel or sequential)
-    cpu_count = min(
-        os.cpu_count() or 1, len(local_paths), 4
-    )  # Limit to 4 to manage memory
-    use_parallel = parallel and cpu_count > 1 and len(local_paths) > 1
+    # Process chunks (parallel or sequential).
+    # Use at most half the available CPUs: each decompressed CO2 chunk is ~500 MB,
+    # so spawning too many workers risks OOM. Half-CPU count is a safer default.
+    n_workers = min(len(local_paths), max(1, (os.cpu_count() or 1) // 2))
+    use_parallel = parallel and n_workers > 1
 
     if verbose:
         print(f"\n\x1b[4mProcessing chunks:\x1b[0m")
-        print(f"- Using {cpu_count if use_parallel else 1} parallel worker(s)")
-        parsing_start_time = time.time()
+        print(f"- Using {n_workers if use_parallel else 1} worker(s)")
 
-    # Prepare arguments for processing
     args_list = [
         (i, file, engine, columns, output, wav_pairs[i])
         for i, file in enumerate(local_paths)
     ]
 
     if use_parallel:
-        # Parallel processing with ordered results
-        with Pool(processes=cpu_count) as pool:
-            results = list(
-                tqdm(
-                    pool.imap(_process_single_chunk_worker, args_list),
-                    total=len(local_paths),
-                    desc="Processing chunks",
-                    disable=not verbose,
-                )
-            )
+        with Pool(processes=n_workers) as pool:
+            result_iter = pool.imap(_process_single_chunk_worker, args_list)
     else:
-        # Sequential processing
-        results = []
-        with tqdm(
-            total=len(local_paths), desc="Processing chunks", disable=not verbose
-        ) as pbar:
-            for args in args_list:
-                result = _process_single_chunk_worker(args)
-                results.append(result)
-                pbar.set_postfix_str(result[1])  # "cache" or "parsed"
-                pbar.update(1)
+        result_iter = map(_process_single_chunk_worker, args_list)
+
+    results = list(
+        tqdm(
+            result_iter,
+            total=len(local_paths),
+            desc="Processing chunks",
+            disable=not verbose,
+        )
+    )
 
     # Append results in order
-    for df, source in results:
+    for df, _ in results:
         _append_dataframe(df)
-
-    if verbose:
-        parsing_end_time = time.time()
-        parsing_duration = parsing_end_time - parsing_start_time
-        print(f"Parsing completed in {parsing_duration:.2f}s")
 
     # Combine DataFrames
     if dataframes:
@@ -899,7 +884,8 @@ def download_and_decompress_CO2_into_df(
     local_databases : str or None, optional
         Directory to store/read local database files. If None, uses the default directory.
     parallel : bool, default True
-        Use multiprocessing for parallel chunk parsing. Default is True.
+        Use multiprocessing for parallel chunk parsing. Default is ``True``.
+
     Returns
     -------
     DataFrame or object
