@@ -632,18 +632,14 @@ def _download_single_chunk(
 
 
 def _process_single_chunk_worker(args):
-    """Worker function for processing one chunk in parallel (module-level for pickling)."""
-    i, file, engine_val, columns_val, output_val, wav_pair, verbose = args
-
-    chunk_name = os.path.basename(file)
-    if verbose:
-        print(f"  [chunk {i + 1}] starting: {chunk_name}", flush=True)
+    """Worker function for processing one chunk (module-level for pickling)."""
+    i, file, engine_val, columns_val, output_val, wav_pair = args
 
     file_name = _fcache_file_name(file, engine_val)
-    cached_df = _load_cache_file(file_name, engine=engine_val, columns=columns_val)
+    df = _load_cache_file(file_name, engine=engine_val, columns=columns_val)
 
-    if cached_df is None:
-        cached_df = parse_one_CO2_block(
+    if df is None:
+        df = parse_one_CO2_block(
             file,
             columns=columns_val,
             engine=engine_val,
@@ -651,17 +647,12 @@ def _process_single_chunk_worker(args):
             wav_range=wav_pair,
             verbose=False,
         )
-        if verbose:
-            print(f"  [chunk {i + 1}] done: {chunk_name}", flush=True)
-    else:
-        if verbose:
-            print(f"  [chunk {i + 1}] loaded from cache: {chunk_name}", flush=True)
 
     # Clean up .par file
     if os.path.exists(file):
         os.remove(file)
 
-    return i, cached_df
+    return i, df
 
 
 def read_and_write_chunked_for_CO2(
@@ -792,21 +783,15 @@ def read_and_write_chunked_for_CO2(
                 f"\nAll files already downloaded. Loading from `.h5` or `.hdf5` files."
             )
 
-    # Process chunks (parallel or sequential).
-    # Use at most half the available CPUs: each decompressed CO2 chunk is ~500 MB,
-    # so spawning too many workers risks OOM. Half-CPU count is a safer default.
     n_workers = min(len(local_paths), max(1, (os.cpu_count() or 1) // 2))
     use_parallel = parallel and n_workers > 1
 
     if verbose:
         print(f"\n\x1b[4mProcessing chunks:\x1b[0m")
         print(f"- Using {n_workers if use_parallel else 1} worker(s)")
-        for i, path in enumerate(local_paths):
-            print(f"  [{i + 1}/{len(local_paths)}] {os.path.basename(path)}")
 
-    worker_verbose = verbose and not use_parallel
     args_list = [
-        (i, file, engine, columns, output, wav_pairs[i], worker_verbose)
+        (i, file, engine, columns, output, wav_pairs[i])
         for i, file in enumerate(local_paths)
     ]
 
