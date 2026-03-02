@@ -113,7 +113,7 @@ def partial_download_co2_chunk(
     i_max = min(i_max + 1, len(offsets) - 1)
 
     if verbose:
-        print(f"Found target in compressed blocks: {i_min} to {i_max}")
+        print(f"Found target in compressed blocks: {i_min} to {i_max} cm-1")
         print(
             f"Wavenumber range: {wavenumbers[i_min]:.6f} to {wavenumbers[i_max]:.6f} cm-1"
         )

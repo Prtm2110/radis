@@ -15,8 +15,7 @@ import re
 import time
 import urllib.request
 import warnings
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from multiprocessing import Pool
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from os.path import basename, commonpath, join
 from typing import Union
 
@@ -634,15 +633,17 @@ def _download_single_chunk(
 
 def _process_single_chunk_worker(args):
     """Worker function for processing one chunk in parallel (module-level for pickling)."""
-    _, file, engine_val, columns_val, output_val, wav_pair = args
+    i, file, engine_val, columns_val, output_val, wav_pair, verbose = args
+
+    chunk_name = os.path.basename(file)
+    if verbose:
+        print(f"  [chunk {i + 1}] starting: {chunk_name}", flush=True)
 
     file_name = _fcache_file_name(file, engine_val)
     cached_df = _load_cache_file(file_name, engine=engine_val, columns=columns_val)
 
-    if cached_df is not None:
-        source = "cache"
-    else:
-        df = parse_one_CO2_block(
+    if cached_df is None:
+        cached_df = parse_one_CO2_block(
             file,
             columns=columns_val,
             engine=engine_val,
@@ -650,14 +651,17 @@ def _process_single_chunk_worker(args):
             wav_range=wav_pair,
             verbose=False,
         )
-        cached_df = df
-        source = "parsed"
+        if verbose:
+            print(f"  [chunk {i + 1}] done: {chunk_name}", flush=True)
+    else:
+        if verbose:
+            print(f"  [chunk {i + 1}] loaded from cache: {chunk_name}", flush=True)
 
     # Clean up .par file
     if os.path.exists(file):
         os.remove(file)
 
-    return cached_df, source
+    return i, cached_df
 
 
 def read_and_write_chunked_for_CO2(
@@ -797,29 +801,46 @@ def read_and_write_chunked_for_CO2(
     if verbose:
         print(f"\n\x1b[4mProcessing chunks:\x1b[0m")
         print(f"- Using {n_workers if use_parallel else 1} worker(s)")
+        for i, path in enumerate(local_paths):
+            print(f"  [{i + 1}/{len(local_paths)}] {os.path.basename(path)}")
 
+    worker_verbose = verbose and not use_parallel
     args_list = [
-        (i, file, engine, columns, output, wav_pairs[i])
+        (i, file, engine, columns, output, wav_pairs[i], worker_verbose)
         for i, file in enumerate(local_paths)
     ]
 
     if use_parallel:
-        with Pool(processes=n_workers) as pool:
-            result_iter = pool.imap(_process_single_chunk_worker, args_list)
+        ordered = [None] * len(args_list)
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            futures = {
+                executor.submit(_process_single_chunk_worker, args): args
+                for args in args_list
+            }
+            with tqdm(
+                total=len(local_paths), desc="Processing chunks", disable=not verbose
+            ) as pbar:
+                for future in as_completed(futures):
+                    i, df = future.result()  # re-raises any worker exception
+                    ordered[i] = df
+                    pbar.set_postfix_str(
+                        os.path.basename(futures[future][1]), refresh=True
+                    )
+                    pbar.update(1)
+        results = ordered
     else:
-        result_iter = map(_process_single_chunk_worker, args_list)
-
-    results = list(
-        tqdm(
-            result_iter,
-            total=len(local_paths),
-            desc="Processing chunks",
-            disable=not verbose,
+        results_raw = list(
+            tqdm(
+                map(_process_single_chunk_worker, args_list),
+                total=len(local_paths),
+                desc="Processing chunks",
+                disable=not verbose,
+            )
         )
-    )
+        results = [df for _, df in results_raw]
 
     # Append results in order
-    for df, _ in results:
+    for df in results:
         _append_dataframe(df)
 
     # Combine DataFrames
