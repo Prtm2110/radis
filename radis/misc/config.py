@@ -457,11 +457,11 @@ def get_user_config(configpath=CONFIG_PATH_JSON):
         try:
             config = json.load(f)
         except JSONDecodeError as err:
-            raise JSONDecodeError(
-                f"Error reading '{configpath}' (line {err.lineno} col {err.colno}): \n{err.msg}",
-                err.doc,
-                err.pos,
-            ) from err
+            warnings.warn(
+                f"Error reading '{configpath}' (line {err.lineno} col {err.colno}): \n{err.msg}\n"
+                "The file might be corrupted. Starting with an empty configuration."
+            )
+            config = {}
 
     return config
 

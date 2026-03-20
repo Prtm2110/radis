@@ -84,7 +84,11 @@ def read_config():
     """
     if os.path.exists(CONFIG_PATH_JSON):
         with open(CONFIG_PATH_JSON, "r") as f:
-            config = json.load(f)
+            try:
+                config = json.load(f)
+            except json.JSONDecodeError:
+                warnings.warn(f"Failed to read the RADIS configuration from {CONFIG_PATH_JSON}. The file might be corrupted. Continuing with empty config.")
+                config = {}
     else:
         config = {}
     return config
@@ -735,7 +739,7 @@ def read_and_write_chunked_for_CO2(
     if verbose:
         print("-" * 80)
         print(
-            f"CO2 - HITEMP 2024 - Downloading and processing {len(wav_pairs)} chunks for range {load_wavenum_min}-{load_wavenum_max} cm⁻¹"
+            f"CO2 - HITEMP 2024 - Downloading and processing {len(wav_pairs)} chunks for range {load_wavenum_min}-{load_wavenum_max} cm-1"
         )
         print("-" * 80)
 
